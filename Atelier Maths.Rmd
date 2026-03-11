@@ -1,0 +1,186 @@
+---
+title: "Atelier Maths"
+output: html_document
+date: "2025-05-10"
+---
+### ARDACHAM Mahamat Teguene
+### ANZIZA Ahamada Madi
+### L3 MIASHS | AMU
+
+Nous allons nous concentrer sur les variables liées aux seuils de revenus (tptinc), moyennes (aptinc) et coefficients β (bptinc) pour la population adulte (code 992), en privilégiant les données par individu (j).
+
+Étape 1 : Chargement des données
+
+```{r}
+# Charger les bibliothèques nécessaires
+library(ggplot2)
+library(dplyr)
+
+# Importer les données (supposées dans le répertoire de travail)
+wid_data = read.csv2(file.choose(), sep = ";", stringsAsFactors = FALSE)
+
+# Afficher les premières lignes et la structure
+head(wid_data)
+str(wid_data)
+```
+
+Étape 2 : Identifier les variables pertinentes
+
+Nous cherchons :
+
+tptincj992 (seuil de revenu par individu adulte),
+aptincj992 (moyenne de revenu),
+bptincj992 (coefficient β).
+Si elles ne sont pas disponibles, nous cherchons des variantes (ex: tptinci992 ou tptinct992).
+
+```{r}
+# Lister les variables disponibles
+variables = unique(wid_data$variable)
+print(length(variables))
+
+# Filtrer les variables de revenu pour les adultes (992) et par individu (j/i/t)
+revenu_vars = variables[grepl("(tptinc|aptinc|bptinc).*992", variables)]
+print(revenu_vars)
+```
+
+Étape 3 : Extraction des données de revenu
+
+tptincj992 est disponible
+
+```{r}
+# Filtrer les données pour tptincj992
+revenu_data = wid_data %>% 
+  filter(variable == "tptincj992")
+
+# Vérifier les années disponibles
+unique(revenu_data$year)
+```
+Étape 4 : Analyse des inégalités
+
+Pour étudier les inégalités, comparons les percentiles extrêmes (ex: p0p10 vs p90p100).
+
+```{r}
+# Données pour les percentiles extrêmes
+inegalites_data <- wid_data %>% 
+  filter(variable == "tptincj992", percentile %in% c("p0p10", "p90p100"))
+
+# Visualisation
+ggplot(inegalites_data, aes(x = year, y = value, color = percentile)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Écart de revenu entre les 10% les plus pauvres et les 10% les plus riches",
+    x = "Année",
+    y = "Revenu"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Sauvegarder les données filtrées
+write.csv2(revenu_data, "revenu_italie.csv", row.names = FALSE); revenu_data
+
+# Exporter un graphique
+ggsave("inegalites_italie.png", width = 10, height = 6, dpi = 300)
+
+data_filtered = wid_data %>%
+  filter(variable == "tptincj992", year == 2020)
+
+data_filtered
+
+# Vérifier le résultat
+head(data_filtered)
+nrow(data_filtered)  # Doit être ~200 (1 ligne par percentile)
+```
+
+
+Étape 2.4 : Tracer la courbe N(R) et estimer la pente de Pareto
+
+Objectifs :
+
+Extraire les percentiles ≥ 95% (ex: p95p100, p99p100).
+Calculer :
+Le revenu seuil (R) pour chaque percentile.
+La proportion de la population (N) correspondante (ex: p99p100 = 1% de la population).
+Tracer log(N) en fonction de log(R) et estimer la pente (coefficient de Pareto).
+
+```{r}
+library(tidyverse)
+
+# 1. Extraire les percentiles élevés et convertir les valeurs
+high_percentiles <- data_filtered %>%
+  filter(grepl("p(95|96|97|98|99|100)", percentile)) %>%
+  mutate(
+    value = as.numeric(value),  # Conversion en numérique
+    
+    # Méthode alternative pour extraire les bornes (sans lookbehind complexe)
+    bounds = str_extract(percentile, "(?<=p).+"),  # Supprime le premier 'p'
+    bounds = str_split(bounds, "p"),               # Sépare en deux parties
+    lower_bound = sapply(bounds, function(x) as.numeric(x[1])),
+    upper_bound = sapply(bounds, function(x) as.numeric(x[2])),
+    
+    # Calculs
+    N = (upper_bound - lower_bound) / 100,
+    log_N = log(N),
+    log_R = log(value)
+  ) %>%
+  drop_na()
+
+# 2. Vérification des données
+print(high_percentiles %>% select(percentile, lower_bound, upper_bound, N, value))
+
+# 3. Tracer la courbe
+ggplot(high_percentiles, aes(x = log_R, y = log_N)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Loi de Pareto (log-log)")
+
+unique(data_filtered$percentile)
+
+test_data <- tibble(
+  percentile = c("p95p100", "p99p100", "p99.9p100"),
+  value = c("50000", "200000", "1000000")
+)
+# Appliquez le code ci-dessus à test_data pour déboguer.
+test_data
+
+# Après avoir créé high_percentiles, vérifiez les NA/NaN/Inf
+high_percentiles %>%
+  summarise(
+    NA_log_N = sum(is.na(log_N)),
+    NA_log_R = sum(is.na(log_R)),
+    Inf_log_N = sum(is.infinite(log_N)),
+    Inf_log_R = sum(is.infinite(log_R))
+  )
+
+# Supprimer les lignes avec NA/NaN/Inf
+high_percentiles_clean <- high_percentiles %>%
+  filter(
+    !is.na(log_N), 
+    !is.na(log_R),
+    !is.infinite(log_N),
+    !is.infinite(log_R)
+  )
+
+print(high_percentiles_clean %>% select(percentile, log_N, log_R))
+
+# 4. Calculer alpha
+model <- lm(log_N ~ log_R, data = high_percentiles_clean)
+alpha <- -coef(model)[2]
+print(paste("Coefficient de Pareto (α) estimé :", round(alpha, 2)))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
